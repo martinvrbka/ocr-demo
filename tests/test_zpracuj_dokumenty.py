@@ -56,6 +56,7 @@ class TestRuleUtilities(unittest.TestCase):
         samples = {
             "ambulantni zprava pacient udava bolest pracovni neschopnost": "lekarska_zprava",
             "dobry den pane novak omlouvam se cislo skodni udalosti u nich je 26-55-0091": "korespondence",
+            "telefonicky jsem vse hlasil pojistovne poznamka od klienta": "korespondence",
             "rechnung rechnungsnummer 2026-0451 betrag 489,00 eur": "faktura",
             "prijmovy pokladni doklad prijato castka 1 200 kc parkoviste": "faktura",
             "doklad vymena celniho skla kuhrade 8 450 kc": "faktura",
@@ -86,6 +87,12 @@ class TestRuleUtilities(unittest.TestCase):
         result = extract("faktura", text, "20260925_183305.jpg")
         self.assertEqual(result["Číslo faktury"], "AH-2026-311")
         self.assertEqual(result["Dodavatel"], "AUTOSKLOHORAK")
+
+    def test_garbled_document_number_does_not_leak_into_filename_facts(self):
+        text = "Datum:18.10.2026 Celkemkuhrade:22900Ke DokladE.AV-2026-177 Opravalevychdverivozidla9AB6104 FAKTURA-AUTOSERVIS"
+        result = extract("faktura", text, "w2q9m6fd.jpg")
+        self.assertIsNone(result.get("Číslo faktury"))
+        self.assertEqual(result["Za co"], "oprava dveří")
 
     def test_extracts_windshield_replacement_from_photo_invoice_ocr(self):
         text = "Doklad.:AH-2026-311\nVymena celniho skla ve. lepeni\nKUHRADE:8450,-Kc"
@@ -276,6 +283,44 @@ class TestRuleUtilities(unittest.TestCase):
             self.assertEqual(result["typ"], "faktura")
             self.assertEqual(result["zdroj"], "pravidla")
             self.assertEqual(result["naklad"]["castka_celkem"], 1200)
+
+    def test_random_upload_name_is_renamed_from_document_content(self):
+        processor = Zpracovani.__new__(Zpracovani)
+        processor.ai = None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "sfds66dfs4.txt"
+            output = root / "processed"
+            source.write_text(
+                "FAKTURA AutoSklo Brno\nDoklad č. AG-2026-449\n"
+                "Výměna čelního skla\nCelkem k úhradě: 9 680 Kč",
+                encoding="utf-8",
+            )
+            with patch("zpracuj_dokumenty.OUT", output):
+                result = processor.process(source)
+            self.assertEqual(result["puvodni_soubor"], "sfds66dfs4.txt")
+            self.assertEqual(Path(result["cesta"]).name, "faktura_vymena_celniho_skla_ag_2026_449.txt")
+            self.assertTrue((output / result["cesta"]).is_file())
+
+    def test_random_photo_pdf_and_eml_names_are_detected_as_uninformative(self):
+        from zpracuj_dokumenty import is_uninformative_filename
+
+        for name in ("sfds66dfs4.jpg", "3ffds87.pdf", "q7x9ds2k.eml", "w2q9m6fd.jpg"):
+            with self.subTest(name=name):
+                self.assertTrue(is_uninformative_filename(Path(name)))
+
+    def test_informative_upload_name_is_preserved(self):
+        processor = Zpracovani.__new__(Zpracovani)
+        processor.ai = None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "invoice_AG-2026-449.txt"
+            output = root / "processed"
+            source.write_text("Faktura č. AG-2026-449\nCelkem k úhradě: 9 680 Kč", encoding="utf-8")
+            with patch("zpracuj_dokumenty.OUT", output):
+                result = processor.process(source)
+            self.assertNotIn("puvodni_soubor", result)
+            self.assertEqual(Path(result["cesta"]).name, source.name)
 
     def test_run_once_skips_duplicate_content_from_earlier_run(self):
         import hashlib

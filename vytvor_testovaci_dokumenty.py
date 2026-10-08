@@ -799,6 +799,123 @@ def scenario_08_neuplne_a_rozporuplne_podklady():
     return folder
 
 
+def scenario_09_necitelne_nazvy_a_mobilni_faktury():
+    folder = _scenario_dir("testovaci_dokumenty_09_necitelne_nazvy_a_mobilni_faktury")
+    vin = "TMBJG7NE8L0438271"
+    _make_eml(folder / "q7x9ds2k.eml", "Hlášení škody – Octavia", "7AK 2341", vin,
+              "12.10.2026", "Praha, Sokolovská 88", "Petr Svoboda")
+    _make_phone_photo(folder / "sfds66dfs4.jpg", [
+        "**AUTO SKLO NOVÁK – DAŇOVÝ DOKLAD",
+        "Doklad č. ASN-2026-882 · Datum 13.10.2026",
+        "Zákazník: Jan Novák · SPZ 7AK 2341",
+        "Výměna čelního skla .......... 9 300 Kč",
+        "Kalibrace kamery ............... 950 Kč",
+        "**Celkem k úhradě: 10 250 Kč",
+    ], seed=91, rotation=3.1, fsize=29)
+    _make_rotated_scan_pdf(folder / "3ffds87.pdf", [
+        "**POLICIE ČR – PROTOKOL O NEHODĚ",
+        "Č. j.: KRPA-11802-7/2026",
+        "Datum nehody: 12.10.2026, 18:05",
+        "Místo: Praha, Sokolovská 88",
+        "Vozidlo A: Škoda Octavia, SPZ 7AK 2341",
+        "Vozidlo B: Ford Focus, SPZ 3BC 4421",
+        "Zavinění: řidič vozidla B",
+        "Zranění: bez zranění",
+    ], rotation=90)
+    _make_phone_photo(folder / "a9v3kk2p.png", [
+        "**OSVĚDČENÍ O REGISTRACI VOZIDLA",
+        "Registrační značka: 7AK 2341",
+        "Provozovatel: Jan Novák",
+        "Tovární značka: ŠKODA",
+        f"VIN: {vin}",
+    ], seed=92, rotation=-1.8, fsize=28, paper=(231, 239, 229))
+    _make_invoice_pdf(folder / "n4pd8s2f.pdf", "Faktura – Odtahová služba Praha", [
+        ("Odtah vozidla do servisu", "2 600,00 Kč")], "2 600,00 Kč")
+    _make_xlsx(folder / "vv77kk2m.xlsx", "PU-2026-031082", "7AK 2341", vin)
+    foto_poskozeni(folder / "k3j88s2d.jpg", 92, (187, 203, 218))
+    return folder
+
+
+def scenario_10_jeden_doklad_dve_podoby():
+    folder = _scenario_dir("testovaci_dokumenty_10_jeden_doklad_dve_podoby")
+    vin = "WVWZZZ1KZBW092614"
+    _make_eml(folder / "d8fk22as.eml", "Doplnění dokladů – světlomet", "4AF 9988", vin,
+              "14.10.2026", "Olomouc, tř. Míru 12", "Marek Havel")
+    _make_invoice_pdf(folder / "p0l9x2wa.pdf", "Faktura – Autodíly Morava", [
+        ("LED světlomet levý", "12 800,00 Kč"), ("Doprava", "350,00 Kč")], "13 150,00 Kč")
+    _make_phone_photo(folder / "z6v2q1mx.jpg", [
+        "**AUTODÍLY MORAVA – FAKTURA",
+        "Faktura č. AM-2026-1038",
+        "Datum vystavení: 14.10.2026",
+        "LED světlomet levý .......... 12 800 Kč",
+        "Doprava ......................... 350 Kč",
+        "**Celkem k úhradě: 13 150 Kč",
+    ], seed=101, rotation=-2.7, fsize=29, paper=(249, 246, 236))
+    _make_phone_photo(folder / "c2m8v4qa.jpg", [
+        "**SMS – Marek Havel",
+        "Dobry den, fakturu za svetlomet posilam.",
+        "Cislo skodni udalosti: OL-26-8841",
+        "Prosim potvrdte prijeti.",
+    ], seed=102, rotation=1.1, fsize=31, paper=(235, 231, 226))
+    _make_phone_photo(folder / "j7x4pp02.png", [
+        "**AMBULANTNÍ ZPRÁVA",
+        "Pacient: Marek Havel",
+        "Datum vyšetření: 14.10.2026",
+        "Kontrola po dopravní nehodě.",
+        "Dg.: pohmoždění hrudníku",
+        "Doporučen klidový režim.",
+    ], seed=103, rotation=90, font=MONO, fsize=26, paper=(245, 242, 230))
+    _make_rotated_scan_pdf(folder / "9tq42zz8.pdf", [
+        "**POLICIE ČR – ZÁZNAM O NEHODĚ",
+        "Č. j.: KRP-77201-3/2026",
+        "Datum: 14.10.2026, 11:25",
+        "Vozidlo A: Volkswagen, SPZ 4AF 9988",
+        "Zranění: bez zranění",
+        "Zavinění: řidič vozidla B",
+    ], rotation=90)
+    foto_poskozeni(folder / "b9na31xc.jpg", 103, (205, 215, 226))
+    return folder
+
+
+def scenario_11_smes_fotek_a_skenu():
+    folder = _scenario_dir("testovaci_dokumenty_11_smes_fotek_a_skenu")
+    vin = "TMBJG7NE8L0729451"
+    _make_eml(folder / "p3r7v0zz.eml", "Nehoda na parkovišti", "9AB 6104", vin,
+              "16.10.2026", "Brno, Veveří 10 – parkoviště", "neznámý řidič")
+    _make_phone_photo(folder / "x8d2m0qa.jpg", [
+        "**PŘÍJMOVÝ POKLADNÍ DOKLAD č. 441",
+        "Parkoviště Veveří, Brno",
+        "Přijato od: Jan Novák",
+        "Úschova vozidla 16.10.–17.10.2026",
+        "SPZ 9AB 6104",
+        "Částka: 1 800 Kč",
+    ], seed=111, rotation=4.1, font=HAND, fsize=34, paper=(247, 244, 230))
+    _make_phone_photo(folder / "n7w4s2lk.png", [
+        "**OSVĚDČENÍ O REGISTRACI",
+        "SPZ: 9AB 6104",
+        "Provozovatel: Jan Novák",
+        "Značka: ŠKODA OCTAVIA",
+        f"VIN: {vin}",
+    ], seed=112, rotation=-90, fsize=28, paper=(229, 237, 226))
+    _make_invoice_pdf(folder / "f8x1z0cb.pdf", "Faktura – Autoservis Veveří", [
+        ("Oprava levých dveří", "17 500,00 Kč"), ("Lakování", "5 400,00 Kč")], "22 900,00 Kč")
+    _make_phone_photo(folder / "w2q9m6fd.jpg", [
+        "**FAKTURA – AUTOSERVIS VEVERI",
+        "Doklad č. AV-2026-177",
+        "Oprava levých dveří vozidla 9AB 6104",
+        "Celkem k úhradě: 22 900 Kč",
+        "Datum: 18.10.2026",
+    ], seed=113, rotation=2.0, fsize=28, paper=(247, 245, 238))
+    _make_phone_photo(folder / "m4cc71za.jpg", [
+        "**POZNÁMKA OD KLIENTA",
+        "Druhy ridic odjel z mista.",
+        "Na aute je poskozeni levych dveri.",
+        "Telefonicky jsem vse hlasil pojistovne.",
+    ], seed=114, rotation=-1.3, fsize=29, paper=(238, 235, 229))
+    foto_poskozeni(folder / "t6y2k0pp.png", 114, (188, 205, 215))
+    return folder
+
+
 def generuj_dalsi_scenare():
     scenarios = [
         scenario_01_klasicka_nehoda(),
@@ -809,6 +926,9 @@ def generuj_dalsi_scenare():
         scenario_06_faktura_pdf_a_foto(),
         scenario_07_otocene_a_zastinene_doklady(),
         scenario_08_neuplne_a_rozporuplne_podklady(),
+        scenario_09_necitelne_nazvy_a_mobilni_faktury(),
+        scenario_10_jeden_doklad_dve_podoby(),
+        scenario_11_smes_fotek_a_skenu(),
     ]
     for scenario in scenarios:
         print(f"  {scenario.name}")

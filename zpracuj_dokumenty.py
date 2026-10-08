@@ -58,7 +58,8 @@ TYPES = {
     "lekarska_zprava": ("10_Lekarske_zpravy", {"lekarskazprava": 5, "ambulantnizprava": 5,
                                                    "pracovnineschopnost": 3, "pacientudava": 2}),
     "korespondence": ("11_Korespondence", {"skodniudalosti": 3, "omlouvam": 2,
-                                            "volejte": 2, "sms": 3, "dobryden": 1}),
+                                            "volejte": 2, "sms": 3, "dobryden": 1,
+                                            "poznamka": 2, "telefonicky": 2}),
 }
 # Složky a názvy pro všechny typy. Pravidla umí jen typy z TYPES, Claude rozezná všechny.
 FOLDER = {k: v[0] for k, v in TYPES.items()} | {
@@ -277,8 +278,9 @@ def vins(text: str) -> list[str]:
 def extract(doc_type: str, text: str, filename: str) -> dict:
     f: dict = {}
     if doc_type == "faktura":
-        f["Číslo faktury"] = (find(text, r"(?:cislo faktury|rechnungsnummer|doklad\.?)\s*:?\s*([A-Z0-9/\-]+)")
-                              or find(text, r"faktura\s*c?\.?\s*:?\s*([A-Z0-9/\-]*\d[A-Z0-9/\-]*)"))
+        document_number = (find(text, r"(?:cislo faktury|rechnungsnummer|doklad\.?\s*(?:c\.?)?)\s*:?\s*([A-Z0-9/\-]+)")
+                           or find(text, r"faktura\s*c?\.?\s*:?\s*([A-Z0-9/\-]*\d[A-Z0-9/\-]*)"))
+        f["Číslo faktury"] = document_number if document_number and re.search(r"\d", document_number) else None
         supplier = (find(text, r"dodavatel\s*:?\s*([^\n,|]+)")
                     or find(text, r"^\s*(?:(?:rechnung|faktura)\s*)?([A-Z][^\n,|]*?(?:gmbh|s\.r\.o\.|a\.s\.))")
                     or find(text, r"\b(AUTOSKLO[A-Z0-9]+)\b")
@@ -299,6 +301,7 @@ def extract(doc_type: str, text: str, filename: str) -> dict:
         f["Celkem k úhradě"] = ("" if f["_castka"] is None else
                     f"{f['_castka']:,.2f} {display_currency}".replace(",", " ").replace(".", ","))
         f["Za co"] = ("výměna čelního skla" if "celni" in flat and "skl" in flat else
+                      "oprava dveří" if "dver" in flat and any(k in flat for k in ("oprava", "oprav")) else
                       "výměna světlometu" if any(k in flat for k in ("scheinwerfer", "headlight", "svetlomet")) else
                   "parkování vozidla" if "parkovist" in flat else
                   "odtah vozidla" if "odtah" in flat else
@@ -443,6 +446,51 @@ def free_name(folder: Path, name: str) -> Path:
     return target
 
 
+def is_uninformative_filename(path: Path) -> bool:
+    stem = path.stem.lower()
+    if len(stem) < 7 or not stem.isalnum():
+        return False
+    letters = [char for char in stem if char.isalpha()]
+    digits = [char for char in stem if char.isdigit()]
+    no_vowels = not any(char in "aeiouy" for char in letters)
+    high_entropy = len(set(stem)) / len(stem) >= 0.65
+    return len(letters) >= 4 and len(digits) >= 2 and (no_vowels or high_entropy)
+
+
+def descriptive_filename(doc: dict, original: Path) -> str:
+    facts = doc.get("fakta") or {}
+    expense = doc.get("naklad") or {}
+    fields = doc.get("udaje") or {}
+    doc_type = doc.get("typ")
+
+    if doc_type == "faktura":
+        identifier = expense.get("cislo_dokladu") or fields.get("Doklad") or fields.get("Číslo faktury")
+        if identifier and not re.search(r"\d", str(identifier)):
+            identifier = None
+        subject = expense.get("za_co") or "doklad"
+        parts = ["faktura", subject, identifier]
+    elif doc_type == "protokol":
+        parts = ["policejni_protokol", facts.get("datum_nehody"), facts.get("spz_klienta")]
+    elif doc_type == "lekarska_zprava":
+        parts = ["lekarska_zprava", fields.get("Datum vyšetření"), facts.get("spz_klienta")]
+    elif doc_type == "doklad_vozidla":
+        parts = ["doklad_vozidla", fields.get("Registrační značka") or facts.get("spz_klienta")]
+    elif doc_type == "kalkulace":
+        parts = ["kalkulace_opravy", fields.get("Zakázka") or facts.get("cislo_pojistne_udalosti")]
+    elif doc_type == "hlaseni":
+        parts = ["hlaseni_skody", facts.get("cislo_pojistne_udalosti") or facts.get("datum_nehody")]
+    elif doc_type == "korespondence":
+        parts = ["korespondence", fields.get("Číslo škody u druhé pojišťovny")]
+    elif doc_type == "foto":
+        parts = ["fotodokumentace", facts.get("spz_klienta") or "vozidla"]
+    else:
+        return original.name
+
+    ascii_name = ascii_same_length("_".join(str(part) for part in parts if part))
+    stem = re.sub(r"[^A-Za-z0-9]+", "_", ascii_name).strip("_").lower()[:90].rstrip("_")
+    return f"{stem or 'dokument'}{original.suffix.lower()}"
+
+
 def safe_read(path: Path) -> tuple[str, str]:
     try:
         return read_text(path)
@@ -508,8 +556,11 @@ class Zpracovani:
                        text=text.strip()[:4000])
         folder = OUT / FOLDER[rec["typ"]]
         folder.mkdir(parents=True, exist_ok=True)
-        target = free_name(folder, path.name)
+        output_name = descriptive_filename(rec, path) if is_uninformative_filename(path) else path.name
+        target = free_name(folder, output_name)
         shutil.move(str(path), target)
+        if target.name != path.name:
+            rec["puvodni_soubor"] = path.name
         rec["cesta"] = str(target.relative_to(OUT))
         return rec
 
@@ -668,6 +719,8 @@ def write_summary(docs: list[dict], rezim: str):
                    + "".join(f"<span class='tag'>{e(t)}</span>" for t in tags if t)
                    + f"<div class='src'><a href='{e(d['cesta'])}'>{e(d['cesta'])}</a> · zpracováno "
                      f"{e(d['zpracovano'])}</div>")
+        if d.get("puvodni_soubor"):
+            out.append(f"<div class='src'>Původní název uploadu: {e(d['puvodni_soubor'])}</div>")
         if d.get("popis"):
             out.append(f"<p>{e(d['popis'])}</p>")
         if d.get("kvalita"):

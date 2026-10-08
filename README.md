@@ -97,6 +97,8 @@ The difficult documents hide inconsistencies the summary is expected to capture:
 
 **Additional mixed-format claim sets**: `testovaci_dokumenty_05_fotky_z_telefonu/` combines a photographed windshield invoice, a scanned police report, vehicle registration, towing PDF, email, estimate, and damage photo. `testovaci_dokumenty_06_faktura_pdf_a_foto/` includes the same German invoice as both PDF and a phone photo. `testovaci_dokumenty_07_otocene_a_zastinene_doklady/` combines a 90-degree scanned protocol, rotated medical and handwritten parking documents, an invoice PDF, email, and damage photo. `testovaci_dokumenty_08_neuplne_a_rozporuplne_podklady/` mixes conflicting vehicle details, a blurred phone invoice, PDF invoice, email, estimate, SMS-like photo, and vehicle damage photo. Phone captures include perspective, shadows, blur, and JPEG compression.
 
+**Random upload-name cases**: `testovaci_dokumenty_09_necitelne_nazvy_a_mobilni_faktury/`, `testovaci_dokumenty_10_jeden_doklad_dve_podoby/`, and `testovaci_dokumenty_11_smes_fotek_a_skenu/` use meaningless upload names such as `sfds66dfs4.jpg`. When the content is recognized, the processor renames the output file to a descriptive name based on its document type and extracted facts; the original upload name remains visible in the report for traceability. Unrecognized documents keep their original name.
+
 ## What the summary shows
 
 - **Event overview** built from all documents. Each fact shows which document it came from. If multiple documents mention the same fact, the more trustworthy source takes precedence (police before SMS).
@@ -115,4 +117,4 @@ The difficult documents hide inconsistencies the summary is expected to capture:
 
 - `zpracuj_dokumenty.py`: folder monitoring, file reading, rules, classification, and summary generation
 - `ai_vytezeni.py`: connection to Claude and the list of fields to extract from each document
-- `vytvor_testovaci_dokumenty.py`: regenerates the base, difficult and eight mixed-format claim sets
+- `vytvor_testovaci_dokumenty.py`: regenerates the base and difficult documents plus eleven scenario folders
