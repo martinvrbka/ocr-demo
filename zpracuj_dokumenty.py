@@ -692,8 +692,24 @@ def write_summary(docs: list[dict], rezim: str):
 # ----------------------------------------------------------------- hlavní smyčka
 def run_once(z: Zpracovani, docs: list[dict]) -> bool:
     files = ready_files()
+    by_hash = {d["otisk"]: d for d in docs if d.get("otisk")}
     for p in files:
         print(f"→ {p.name} ... ", end="", flush=True)
+        try:
+            digest = hashlib.sha1(p.read_bytes()).hexdigest()
+        except FileNotFoundError:
+            print("soubor už mezitím zmizel, přeskakuji.")
+            continue
+        previous = by_hash.get(digest)
+        if previous:
+            warning = f"Duplicitní nahrání přeskočeno; stejný soubor už je evidován jako {previous['soubor']}."
+            previous.setdefault("upozorneni", [])
+            if warning not in previous["upozorneni"]:
+                previous["upozorneni"].append(warning)
+            p.unlink(missing_ok=True)
+            save_db(docs)
+            print(f"duplicitní obsah už je zařazen jako {previous['soubor']}; kopie přeskočena.")
+            continue
         try:
             doc = z.process(p)
         except FileNotFoundError:
@@ -702,6 +718,8 @@ def run_once(z: Zpracovani, docs: list[dict]) -> bool:
                 continue
             raise
         docs.append(doc)
+        if doc.get("otisk"):
+            by_hash[doc["otisk"]] = doc
         save_db(docs)
         extra = f", jistota {doc['jistota']}" if doc.get("jistota") else ""
         print(f"{TYPE_LABEL[doc['typ']]}  ({doc['zdroj']}{extra})  →  roztridene/{doc['cesta']}")

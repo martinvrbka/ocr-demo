@@ -19,6 +19,7 @@ from zpracuj_dokumenty import (  # noqa: E402
     plates,
     read_pdf,
     rule_fakta,
+    run_once,
     vins,
     Zpracovani,
 )
@@ -275,6 +276,58 @@ class TestRuleUtilities(unittest.TestCase):
             self.assertEqual(result["typ"], "faktura")
             self.assertEqual(result["zdroj"], "pravidla")
             self.assertEqual(result["naklad"]["castka_celkem"], 1200)
+
+    def test_run_once_skips_duplicate_content_from_earlier_run(self):
+        import hashlib
+
+        class FakeProcessor:
+            rezim = "pravidla"
+
+        content = b"identical receipt bytes"
+        digest = hashlib.sha1(content).hexdigest()
+        original = {
+            "soubor": "first.txt", "otisk": digest, "typ": "faktura",
+            "cesta": "06_Faktury/first.txt", "upozorneni": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            duplicate = inbox / "second.txt"
+            duplicate.write_bytes(content)
+            with (patch("zpracuj_dokumenty.INBOX", inbox),
+                  patch("zpracuj_dokumenty.OUT", root / "out"),
+                  patch("zpracuj_dokumenty.DB", root / "db.json"),
+                  patch("zpracuj_dokumenty.ready_files", return_value=[duplicate]),
+                  patch("zpracuj_dokumenty.write_summary") as summary):
+                                self.assertTrue(run_once(FakeProcessor(), [original]))
+            self.assertFalse(duplicate.exists())
+            self.assertEqual(len(original["upozorneni"]), 1)
+            self.assertIn("Duplicitní nahrání", original["upozorneni"][0])
+            summary.assert_called_once()
+
+    def test_run_once_deduplicates_same_batch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inbox = root / "inbox"
+            inbox.mkdir()
+            first = inbox / "first.txt"
+            second = inbox / "second.txt"
+            content = "Faktura č. 2026-1234\nDodavatel: Autoservis\nCelkem k úhradě: 1200 Kč"
+            first.write_text(content, encoding="utf-8")
+            second.write_text(content, encoding="utf-8")
+            processor = Zpracovani.__new__(Zpracovani)
+            processor.ai = None
+            docs = []
+            with (patch("zpracuj_dokumenty.INBOX", inbox),
+                  patch("zpracuj_dokumenty.OUT", root / "out"),
+                  patch("zpracuj_dokumenty.DB", root / "db.json"),
+                  patch("zpracuj_dokumenty.ready_files", return_value=[first, second]),
+                  patch("zpracuj_dokumenty.write_summary")):
+                run_once(processor, docs)
+            self.assertEqual(len(docs), 1)
+            self.assertFalse(second.exists())
+            self.assertTrue(any("Duplicitní nahrání" in warning for warning in docs[0]["upozorneni"]))
 
 
 if __name__ == "__main__":
