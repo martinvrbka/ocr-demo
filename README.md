@@ -95,6 +95,8 @@ To compare behavior, run the same files once with the paid API and once with the
 
 The difficult documents hide inconsistencies the summary is expected to capture: injuries that the police report says did not happen, and a headlight that may have been invoiced twice.
 
+**Additional mixed-format claim sets**: `testovaci_dokumenty_05_fotky_z_telefonu/` combines a photographed windshield invoice, a scanned police report, vehicle registration, towing PDF, email, estimate, and damage photo. `testovaci_dokumenty_06_faktura_pdf_a_foto/` includes the same German invoice as both PDF and a phone photo. `testovaci_dokumenty_07_otocene_a_zastinene_doklady/` combines a 90-degree scanned protocol, rotated medical and handwritten parking documents, an invoice PDF, email, and damage photo. `testovaci_dokumenty_08_neuplne_a_rozporuplne_podklady/` mixes conflicting vehicle details, a blurred phone invoice, PDF invoice, email, estimate, SMS-like photo, and vehicle damage photo. Phone captures include perspective, shadows, blur, and JPEG compression.
+
 ## What the summary shows
 
 - **Event overview** built from all documents. Each fact shows which document it came from. If multiple documents mention the same fact, the more trustworthy source takes precedence (police before SMS).
@@ -113,4 +115,4 @@ The difficult documents hide inconsistencies the summary is expected to capture:
 
 - `zpracuj_dokumenty.py`: folder monitoring, file reading, rules, classification, and summary generation
 - `ai_vytezeni.py`: connection to Claude and the list of fields to extract from each document
-- `vytvor_testovaci_dokumenty.py`: regenerates both test folders
+- `vytvor_testovaci_dokumenty.py`: regenerates the base, difficult and eight mixed-format claim sets

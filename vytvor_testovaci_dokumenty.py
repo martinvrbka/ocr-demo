@@ -1,4 +1,4 @@
-"""Vytvoří složku testovaci_dokumenty/ s fiktivními podklady k jedné pojistné události.
+"""Vytvoří základní, náročné a kombinované fiktivní sady k pojistným událostem.
 
 Všechny firmy, osoby, čísla a částky jsou smyšlené.
 Spuštění:  .venv/bin/python vytvor_testovaci_dokumenty.py
@@ -494,7 +494,7 @@ def narocne():
     narocne_sms_screenshot()
 
 
-# ---------- Další testovací sady (3–4 další sklady) ----------
+# ---------- Další kombinované testovací sady ----------
 def _make_eml(path: Path, subject: str, spz: str, vin: str, datum: str, misto: str, vinik: str):
     msg = EmailMessage()
     msg["From"] = "Klient <klient@example.cz>"
@@ -559,6 +559,26 @@ def _make_xlsx(path: Path, cnt: str, spz: str, vin: str):
         ws.cell(r, 1, row[0])
         ws.cell(r, 2, row[1])
     wb.save(path)
+
+
+def _make_phone_photo(path: Path, lines: list[str], seed: int, *, rotation: float = 0,
+                      font=SANS, fsize: int = 28, paper=(250, 248, 240)):
+    page = _paper(lines, size=(1100, 1500), font=font, fsize=fsize, bg=paper)
+    if rotation:
+        page = page.rotate(rotation, expand=True, fillcolor=paper)
+    if page.width > page.height:
+        corners = [(90, 230), (1510, 95), (1500, 980), (100, 1100)]
+    else:
+        corners = [(350, 35), (1280, 90), (1220, 1160), (280, 1080)]
+    _photo_on_table(page, path, corners, seed=seed)
+
+
+def _make_rotated_scan_pdf(path: Path, lines: list[str], rotation: float = 90):
+    image_path = path.with_suffix(".tmp.png")
+    scan_image(lines, image_path, SERIF, size=28, rotate=0.5, paper=(242, 242, 234))
+    image = Image.open(image_path).convert("RGB").rotate(rotation, expand=True, fillcolor=(220, 220, 215))
+    image.save(path, resolution=150)
+    image_path.unlink()
 
 
 def _scenario_dir(name: str):
@@ -638,12 +658,157 @@ def scenario_04_bez_policie():
     return folder
 
 
+def scenario_05_fotky_z_telefonu():
+    folder = _scenario_dir("testovaci_dokumenty_05_fotky_z_telefonu")
+    vin = "TMBJG7NE8L0246813"
+    _make_eml(folder / "hlaseni_skody.eml", "Hlášení škody – výměna skla", "8AT 4132", vin,
+              "05.10.2026", "Brno, Cejl 61", "Petr Svoboda")
+    _make_phone_photo(folder / "faktura_celni_sklo.jpg", [
+        "**AUTOGLAS BRNO – FAKTURA",
+        "Doklad č. AG-2026-449 · Datum 06.10.2026",
+        "Zákazník: Jan Novák · vozidlo Octavia",
+        "SPZ: 8AT 4132",
+        "Výměna čelního skla .......... 8 900 Kč",
+        "Kalibrace kamery ............... 780 Kč",
+        "**Celkem k úhradě: 9 680 Kč",
+        "Uhrazeno kartou",
+    ], seed=51, rotation=1.6, fsize=30)
+    _make_protocol_pdf(folder / "policejni_zaznam.pdf", [
+        "**POLICIE ČESKÉ REPUBLIKY – ZÁZNAM O NEHODĚ",
+        "Č. j.: KRPM-22148-6/2026",
+        "Datum a čas: 05.10.2026, 17:20",
+        "Místo: Brno, Cejl 61",
+        "Vozidlo A: Škoda Octavia, SPZ 8AT 4132",
+        "Vozidlo B: Ford Focus, SPZ 3BC 4421",
+        "Zranění osob: bez zranění",
+        "Zavinění: řidič vozidla B",
+    ])
+    _make_invoice_pdf(folder / "faktura_odtah.pdf", "Faktura – Odtah Novotný", [
+        ("Odtah vozidla do servisu", "2 800,00 Kč"), ("Manipulace", "500,00 Kč")], "3 300,00 Kč")
+    _make_phone_photo(folder / "technicak_foto.jpg", [
+        "**OSVĚDČENÍ O REGISTRACI VOZIDLA",
+        "A. Registrační značka: 8AT 4132",
+        "B. Datum první registrace: 14.02.2020",
+        "C.1 Provozovatel: JAN NOVÁK, BRNO",
+        "D.1 Tovární značka: ŠKODA",
+        "D.3 Obchodní označení: OCTAVIA COMBI",
+        f"E. Identifikační číslo vozidla (VIN): {vin}",
+    ], seed=52, rotation=-1.2, fsize=27, paper=(232, 239, 228))
+    _make_xlsx(folder / "kalkulace_opravy.xlsx", "PU-2026-014502", "8AT 4132", vin)
+    foto_poskozeni(folder / "foto_poskozeneho_boku.jpg", 52, (175, 205, 222))
+    return folder
+
+
+def scenario_06_faktura_pdf_a_foto():
+    folder = _scenario_dir("testovaci_dokumenty_06_faktura_pdf_a_foto")
+    vin = "WVWZZZ1KZBW184273"
+    _make_eml(folder / "hlaseni_skody.eml", "Hlášení škody – světlomet", "4AF 9988", vin,
+              "08.10.2026", "Olomouc, tř. Kosmonautů", "Marek Havel")
+    invoice_lines = [
+        ("LED-Scheinwerfer links, Rechnung AT-2026-451", "524,00 EUR"),
+        ("Expressversand", "35,00 EUR"),
+    ]
+    _make_invoice_pdf(folder / "Rechnung_AT-2026-451.pdf", "RECHNUNG – Autoteile Huber GmbH",
+                      invoice_lines, "559,00 EUR")
+    _make_phone_photo(folder / "Rechnung_AT-2026-451_foto.jpg", [
+        "**RECHNUNG – AUTOTEILE HUBER GMBH",
+        "Rechnungsnummer: AT-2026-451",
+        "Rechnungsdatum: 07.10.2026 · Kunde: Marek Havel",
+        "LED-Scheinwerfer links ........ 524,00 EUR",
+        "Versand nach Tschechien ........ 35,00 EUR",
+        "**Gesamtbetrag: 559,00 EUR",
+    ], seed=61, rotation=2.4, fsize=29, paper=(248, 247, 239))
+    _make_xlsx(folder / "rozpocet_opravy.xlsx", "PU-2026-018804", "4AF 9988", vin)
+    _make_phone_photo(folder / "sms_druheho_ridice.jpg", [
+        "**SMS – Petr Svoboda",
+        "Dobry den, omlouvam se za nehodu.",
+        "Skodni udalost jsem nahlasil u pojistovny.",
+        "Cislo skodni udalosti: 26-88-4510",
+        "Kdyby neco, volejte 603 987 654.",
+    ], seed=62, rotation=-0.7, fsize=30, paper=(236, 231, 226))
+    foto_poskozeni(folder / "foto_predni_casti.jpg", 62, (202, 214, 224))
+    return folder
+
+
+def scenario_07_otocene_a_zastinene_doklady():
+    folder = _scenario_dir("testovaci_dokumenty_07_otocene_a_zastinene_doklady")
+    vin = "TMBJG7NE8L0195724"
+    _make_eml(folder / "email_klienta.eml", "Doplnění podkladů k nehodě", "5AB 1234", vin,
+              "09.10.2026", "Praha, Křižíkova 18", "Petr Svoboda")
+    _make_rotated_scan_pdf(folder / "protokol_otoceny.pdf", [
+        "**POLICIE ČR – PROTOKOL O DOPRAVNÍ NEHODĚ",
+        "Č. j.: KRPA-9812-4/2026",
+        "Datum nehody: 09.10.2026, 08:10",
+        "Místo: Praha, Křižíkova 18",
+        "Vozidlo A: Škoda Octavia, SPZ 5AB 1234",
+        "Vozidlo B: VW Golf, SPZ 2BC 9876",
+        "Zavinění: řidič vozidla B",
+        "Zranění: bez zranění",
+    ], rotation=90)
+    _make_phone_photo(folder / "lekarska_zprava_otocena.jpg", [
+        "**AMBULANTNÍ ZPRÁVA",
+        "Pacient: Jan Novák",
+        "Datum vyšetření: 10.10.2026",
+        "Pacient udává bolest krční páteře po dopravní nehodě.",
+        "Dg.: distorze krční páteře",
+        "Pracovní neschopnost: 5 dní",
+    ], seed=71, rotation=90, font=MONO, fsize=25, paper=(246, 244, 230))
+    _make_phone_photo(folder / "uctenka_parkoviste.jpg", [
+        "**PARKOVIŠTĚ FLORENC – PŘÍJMOVÝ DOKLAD",
+        "Doklad č. P-1082 · Datum 10.10.2026",
+        "Úschova vozidla 09.10.–10.10.2026",
+        "SPZ 5AB 1234",
+        "Částka: 1 450 Kč",
+        "Přijal: K. Malý",
+    ], seed=72, rotation=-3.2, font=HAND, fsize=36, paper=(249, 245, 228))
+    _make_invoice_pdf(folder / "faktura_servis.pdf", "Faktura – Autoservis Florenc", [
+        ("Oprava levých dveří", "18 500,00 Kč"), ("Lakování", "6 200,00 Kč")], "24 700,00 Kč")
+    foto_poskozeni(folder / "foto_dveri.jpg", 72, (176, 191, 210))
+    return folder
+
+
+def scenario_08_neuplne_a_rozporuplne_podklady():
+    folder = _scenario_dir("testovaci_dokumenty_08_neuplne_a_rozporuplne_podklady")
+    vin = "WVWZZZ1JZXW038521"
+    _make_eml(folder / "hlaseni_bez_policie.eml", "Nehoda bez policejního protokolu", "6BC 7712", vin,
+              "11.10.2026", "Brno, Veveří 32", "neznámý řidič")
+    _make_phone_photo(folder / "technicak_jina_spz.jpg", [
+        "**OSVĚDČENÍ O REGISTRACI VOZIDLA",
+        "Registrační značka: 6BC 7712",
+        "Provozovatel: Jan Novák",
+        "Tovární značka: Volkswagen",
+        f"VIN: {vin}",
+    ], seed=81, rotation=1.8, fsize=29, paper=(231, 239, 230))
+    _make_phone_photo(folder / "faktura_sklo_neostra.jpg", [
+        "**FAKTURA AUTO SKLO BRNO",
+        "Doklad č. AS-2026-911",
+        "Datum vystavení: 12.10.2026",
+        "Výměna bočního skla vozidla 6BC 7712",
+        "Celkem k úhradě: 7 850 Kč",
+    ], seed=82, rotation=-4.0, fsize=25, paper=(246, 245, 235))
+    _make_invoice_pdf(folder / "faktura_za_odtah.pdf", "Faktura – Odtahová služba Expres", [
+        ("Odtah vozidla", "3 200,00 Kč")], "3 200,00 Kč")
+    _make_xlsx(folder / "kalkulace_s_jinou_spz.xlsx", "PU-2026-020091", "6BC 7712", vin)
+    _make_phone_photo(folder / "sms_bez_udaju.jpg", [
+        "**ZPRÁVA OD DRUHÉHO ŘIDIČE",
+        "Dobry den, skodu jsem nahlasil.",
+        "Cislo skodni udalosti zatim nemam.",
+        "Omlouvam se, auto jsem nevidel.",
+    ], seed=83, rotation=0.9, fsize=31, paper=(236, 231, 226))
+    foto_poskozeni(folder / "foto_boku_vozidla.jpg", 83, (189, 204, 214))
+    return folder
+
+
 def generuj_dalsi_scenare():
     scenarios = [
         scenario_01_klasicka_nehoda(),
         scenario_02_nehoda_bez_souhlasu(),
         scenario_03_zraneni_a_sms(),
         scenario_04_bez_policie(),
+        scenario_05_fotky_z_telefonu(),
+        scenario_06_faktura_pdf_a_foto(),
+        scenario_07_otocene_a_zastinene_doklady(),
+        scenario_08_neuplne_a_rozporuplne_podklady(),
     ]
     for scenario in scenarios:
         print(f"  {scenario.name}")
