@@ -51,7 +51,14 @@ TYPES = {
     "kalkulace": ("05_Kalkulace_opravy", {"kalkulace": 4, "odhadskody": 2, "rozpocetopravy": 4,
                                           "zakazka": 1}),
     "faktura": ("06_Faktury", {"faktura": 3, "danovydoklad": 3, "splatnost": 2, "celkemkuhrade": 2,
-                                "variabilnisymbol": 2, "prijmovydoklad": 3, "dodavatel": 1, "odberatel": 1}),
+                                "variabilnisymbol": 2, "prijmovydoklad": 3, "prijmovypokladnidoklad": 4,
+                                "rechnungsnummer": 5, "rechnung": 4, "betrag": 2, "castka": 2,
+                                "kuhrade": 2, "doklad": 1, "parkoviste": 1,
+                                "dodavatel": 1, "odberatel": 1}),
+    "lekarska_zprava": ("10_Lekarske_zpravy", {"lekarskazprava": 5, "ambulantnizprava": 5,
+                                                   "pracovnineschopnost": 3, "pacientudava": 2}),
+    "korespondence": ("11_Korespondence", {"skodniudalosti": 3, "omlouvam": 2,
+                                            "volejte": 2, "sms": 3, "dobryden": 1}),
 }
 # Složky a názvy pro všechny typy. Pravidla umí jen typy z TYPES, Claude rozezná všechny.
 FOLDER = {k: v[0] for k, v in TYPES.items()} | {
@@ -99,7 +106,6 @@ def ocr_image(path: Path) -> str:
             lines.append(" ".join(t for _, t in sorted(cur)))
             cur = []
         cur.append((x, t))
-        cur_y = y
     if cur:
         lines.append(" ".join(t for _, t in sorted(cur)))
     return "\n".join(lines)
@@ -271,19 +277,31 @@ def vins(text: str) -> list[str]:
 def extract(doc_type: str, text: str, filename: str) -> dict:
     f: dict = {}
     if doc_type == "faktura":
-        f["Číslo faktury"] = (find(text, r"cislo faktury\s*:?\s*([A-Z0-9/\-]+)")
+        f["Číslo faktury"] = (find(text, r"(?:cislo faktury|rechnungsnummer|doklad\.?)\s*:?\s*([A-Z0-9/\-]+)")
                               or find(text, r"faktura\s*c?\.?\s*:?\s*([A-Z0-9/\-]*\d[A-Z0-9/\-]*)"))
-        f["Dodavatel"] = (find(text, r"dodavatel\s*\n?\s*(.+)")
-                          or find(text, r"^([^\n,|]*?(?:s\.r\.o\.|a\.s\.))")
-                          or text.strip().splitlines()[0].strip())
+        supplier = (find(text, r"dodavatel\s*:?\s*([^\n,|]+)")
+                    or find(text, r"^\s*(?:(?:rechnung|faktura)\s*)?([A-Z][^\n,|]*?(?:gmbh|s\.r\.o\.|a\.s\.))")
+                    or find(text, r"\b(AUTOSKLO[A-Z0-9]+)\b")
+                    or find(text, r"^(Parkoviste\s+[^,\n]+)"))
+        if not supplier:
+            first_line = text.strip().splitlines()[0].strip() if text.strip() else ""
+            supplier = first_line if len(first_line) <= 100 else None
+        f["Dodavatel"] = supplier
         f["IČO dodavatele"] = find(text, r"\b[I1]C[O0]?\s*:?\s*(\d{8})")
-        f["Datum vystavení"] = norm_date(find(text, r"(?:datum vystaveni|vystaveno)\s*:?\s*" + DATE))
+        f["Datum vystavení"] = norm_date(find(text, r"(?:datum vystaveni|rechnungsdatum|vystaveno|dne)\s*:?\s*" + DATE))
         f["Splatnost"] = norm_date(find(text, r"(?:datum splatnosti|splatnost)\s*:?\s*" + DATE))
-        total = find(text, r"celkem\s*k\s*uhrade\s*:?\s*" + AMOUNT)
+        total = (find(text, r"(?:celkem\s*k\s*uhrade|kuhrade|gesamtbetrag|summe)\s*:?\s*" + AMOUNT)
+             or find(text, r"(?:castka|betrag)\s*:?\s*" + AMOUNT))
         f["_castka"] = to_number(total)
-        f["Celkem k úhradě"] = czk(f["_castka"])
         flat = compact(text)
-        f["Za co"] = ("odtah vozidla" if "odtah" in flat else
+        f["Měna"] = "EUR" if any(marker in flat for marker in ("eur", "osterreich", "oesterreich")) or "\x08" in text else "CZK"
+        display_currency = "Kč" if f["Měna"] == "CZK" else f["Měna"]
+        f["Celkem k úhradě"] = ("" if f["_castka"] is None else
+                    f"{f['_castka']:,.2f} {display_currency}".replace(",", " ").replace(".", ","))
+        f["Za co"] = ("výměna čelního skla" if "celni" in flat and "skl" in flat else
+                      "výměna světlometu" if any(k in flat for k in ("scheinwerfer", "headlight", "svetlomet")) else
+                  "parkování vozidla" if "parkovist" in flat else
+                  "odtah vozidla" if "odtah" in flat else
                       "náhradní vozidlo" if "nahradnivozidlo" in flat or "pujcovna" in flat else
                       "oprava vozidla" if any(k in flat for k in ("prace", "lakovani", "naraznik")) else "jiné")
     elif doc_type == "protokol":
@@ -315,6 +333,14 @@ def extract(doc_type: str, text: str, filename: str) -> dict:
         f["Pojistná smlouva"] = find(text, r"smlouvy\s*:?\s*(\d{6,12})")
         f["Telefon"] = find(text, r"tel\.?\s*:?\s*(\+?[\d ]{9,16}\d)")
         f["Požadavky klienta"] = find(text, r"(prosim[^\n]+)")
+    elif doc_type == "lekarska_zprava":
+        f["Pacient"] = find(text, r"pacient\s*:?\s*([^,\n]+)")
+        f["Datum vyšetření"] = norm_date(find(text, r"datum vysetreni\s*:?\s*" + DATE))
+        f["Diagnóza"] = find(text, r"dg\.?\s*:?\s*([^\n]+)")
+        f["Léčba"] = find(text, r"th\.?\s*:?\s*([^\n]+)")
+    elif doc_type == "korespondence":
+        f["Číslo škody u druhé pojišťovny"] = find(text, r"cislo skodni udalosti u nich je\s*([^\n.]+)")
+        f["Telefon"] = find(text, r"(?:volejte|tel\.?)\s*:?[ ]*(\+?[\d ]{9,16}\d)")
     elif doc_type == "doklad_vozidla":
         f["Registrační značka"] = find(text, r"registracni znacka\s*:?\s*(\w{3}\s?\d{4})")
         f["VIN"] = find(text, r"\(VIN\)\s*:?\s*([A-Z0-9]{17})")
@@ -394,7 +420,7 @@ def rule_naklad(t: str, u: dict) -> dict | None:
     if t == "faktura":
         return {"dodavatel": u.get("Dodavatel"), "cislo_dokladu": u.get("Číslo faktury"), "za_co": u.get("Za co"),
                 "datum_vystaveni": u.get("Datum vystavení"), "splatnost": u.get("Splatnost"),
-                "castka_celkem": u.get("_castka"), "mena": "CZK"}
+                "castka_celkem": u.get("_castka"), "mena": u.get("Měna", "CZK")}
     if t == "kalkulace":
         return {"dodavatel": u.get("Zpracoval"), "castka_celkem": u.get("_castka"), "mena": "CZK"}
     return None
@@ -460,10 +486,11 @@ class Zpracovani:
         is_image = path.suffix.lower() in IMAGE_EXT
         rec = {"soubor": path.name, "otisk": hashlib.sha1(path.read_bytes()).hexdigest(),
                "zpracovano": datetime.now().strftime("%d.%m.%Y %H:%M:%S"), "upozorneni": []}
-        # Obrázky a PDF čte Claude přímo; text potřebujeme pro Word/Excel/e-mail a jako zálohu.
-        direct = self.ai and (is_image or path.suffix.lower() == ".pdf")
-        text, method = ("", "") if direct else safe_read(path)
-        a = self.analyze_ai(path, text, is_image) if self.ai else None
+        text, method = safe_read(path)
+        doc_type, _ = classify(text, is_image)
+        local_rules_sufficient = (getattr(self.ai, "provider", None) == "local"
+                                  and doc_type not in {"foto", "neznamy"})
+        a = self.analyze_ai(path, text, is_image) if self.ai and not local_rules_sufficient else None
         if a:
             zdroj = "lokální model" if getattr(self.ai, "provider", None) == "local" else "Claude"
             rec.update(
@@ -475,12 +502,9 @@ class Zpracovani:
                 naklad=a.naklad.model_dump() if a.naklad else None,
                 udaje={u.nazev: u.hodnota for u in a.udaje}, text=text.strip()[:4000])
         else:
-            if direct:
-                text, method = safe_read(path)
-            t, _ = classify(text, is_image)
-            u = extract(t, text, path.name) if t != "neznamy" else {}
-            rec.update(typ=t, zdroj="pravidla", precteno=method, fakta=rule_fakta(t, u),
-                       naklad=rule_naklad(t, u), udaje={k: v for k, v in u.items() if not k.startswith("_")},
+            u = extract(doc_type, text, path.name) if doc_type != "neznamy" else {}
+            rec.update(typ=doc_type, zdroj="pravidla", precteno=method, fakta=rule_fakta(doc_type, u),
+                       naklad=rule_naklad(doc_type, u), udaje={k: v for k, v in u.items() if not k.startswith("_")},
                        text=text.strip()[:4000])
         folder = OUT / FOLDER[rec["typ"]]
         folder.mkdir(parents=True, exist_ok=True)

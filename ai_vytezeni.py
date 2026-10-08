@@ -75,17 +75,16 @@ class Naklad(BaseModel):
 
 class Analyza(BaseModel):
     typ: TYPY
-    vyfoceny_dokument: bool = Field(description="True, pokud jde o dokument vyfocený mobilem/naskenovaný")
-    popis: str = Field(description="Jedna věta česky: co to je. U fotek: co je vidět a jaké poškození.")
-    jazyk: str = Field(description="Jazyk dokumentu, např. 'čeština', 'němčina'")
-    jistota: Literal["vysoka", "stredni", "nizka"]
+    vyfoceny_dokument: bool = False
+    popis: str = ""
+    jazyk: str = "neznámý"
+    jistota: Literal["vysoka", "stredni", "nizka"] = "nizka"
     kvalita: Optional[str] = Field(None, description="Problémy s čitelností (rozmazané, useknuté, "
                                                      "ručně psané nejasné místo...). Jinak null.")
-    upozorneni: list[str] = Field(description="Věci, které by měl likvidátor ověřit (nesrovnalosti, "
-                                              "podezřelé údaje, chybějící podpis...). Může být prázdné.")
-    fakta: Fakta
+    upozorneni: list[str] = Field(default_factory=list)
+    fakta: Fakta = Field(default_factory=Fakta)
     naklad: Optional[Naklad] = None
-    udaje: list[Udaj] = Field(description="Všechny další důležité údaje z dokumentu")
+    udaje: list[Udaj] = Field(default_factory=list)
 
 
 SYSTEM = """Jsi asistent likvidátora škod z pojištění vozidel v české pojišťovně.
@@ -198,14 +197,15 @@ class LocalOpenAICompatibleClient:
         with urllib.request.urlopen(req, timeout=120) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
-    def parse(self, *, model: str, messages: list, max_tokens: int, system: str):
+    def parse(self, *, model: str, messages: list, max_tokens: int, system: str, json_mode: bool = True):
         payload = {
             "model": model,
             "messages": [{"role": "system", "content": system}] + messages,
             "temperature": 0,
             "max_tokens": max_tokens,
-            "response_format": {"type": "json_object"},
         }
+        if json_mode:
+            payload["response_format"] = {"type": "json_object"}
         response = self._request(payload)
         text = response["choices"][0]["message"]["content"]
         if isinstance(text, list):
@@ -248,33 +248,51 @@ class Analyzator:
     def analyze(self, path: Path, text: str, is_image: bool) -> Analyza:
         """text = text, který aplikace už přečetla (Word, Excel, e-mail...). Obrázky a PDF jdou přímo."""
         if self.provider == "local":
-            prompt = (
-                f"{SYSTEM}\n\n"
-                f"Název souboru: {path.name}\n"
-                f"<obsah_souboru>\n{text or 'Soubor byl načten jako obrázek nebo PDF; OCR text chybí.'}\n</obsah_souboru>\n"
-                "Rozpoznej a vytěž tento dokument. Odpověď musí být validní JSON podle zadaného schématu."
-            )
-            try:
-                if is_image and self.local_client.supports_vision() and path.exists():
-                    messages = self.local_client.build_vision_messages(SYSTEM, prompt, path)
-                    response_text = self.local_client.parse(
-                        model=self.local_client.model,
-                        messages=messages[1:],
-                        max_tokens=16000,
-                        system=messages[0]["content"],
-                    )
-                else:
-                    response_text = self.local_client.parse(
-                        model=self.local_client.model,
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=16000,
-                        system=SYSTEM,
-                    )
-            except Exception:
+            def compact_schema(value):
+                if isinstance(value, dict):
+                    return {key: compact_schema(item) for key, item in value.items()
+                            if key not in {"title", "description"}}
+                if isinstance(value, list):
+                    return [compact_schema(item) for item in value]
+                return value
+
+            schema = json.dumps(compact_schema(Analyza.model_json_schema()), ensure_ascii=False,
+                                separators=(",", ":"))
+            if is_image and self.local_client.supports_vision() and path.exists():
+                prompt = (
+                    f"Obrázek souboru {path.name}. OCR: {text or 'bez čitelného textu'}. "
+                    "Napiš jedinou stručnou českou větu o tom, co je na obrázku vidět. "
+                    "U auta pojmenuj poškozenou část a její stav, pokud je jasně viditelný. "
+                    "Netvrď probíhající výměnu, pokud je vidět jen hotové auto."
+                )
+                vision_system = "Odpovídej jen jednou věcnou větou. Neopakuj název souboru ani instrukce."
+                messages = self.local_client.build_vision_messages(vision_system, prompt, path)
+                response_text = self.local_client.parse(
+                    model=self.local_client.model,
+                    messages=messages[1:],
+                    max_tokens=128,
+                    system=messages[0]["content"],
+                    json_mode=False,
+                )
+                caption_lines = [line.strip() for line in response_text.splitlines() if line.strip()]
+                caption = caption_lines[-1].lstrip("-*0123456789. ").strip().strip('"') if caption_lines else ""
+                if not caption:
+                    raise ValueError("model nevrátil popis obrázku")
+                if caption.lower() in {"stručný popis česky", "strucny popis cesky"}:
+                    raise ValueError("model vrátil zástupný text místo popisu obrázku")
+                return Analyza(typ="foto", vyfoceny_dokument=False, popis=caption)
+            else:
+                prompt = (
+                    f"Název souboru: {path.name}\n"
+                    f"<obsah_souboru>\n{text or 'Soubor byl načten jako obrázek nebo PDF; OCR text chybí.'}\n</obsah_souboru>\n"
+                    "Rozpoznej a vytěž tento dokument. Vrať pouze jeden JSON objekt přesně podle tohoto schématu; "
+                    "zachovej všechny povinné klíče a datové typy:\n"
+                    f"{schema}"
+                )
                 response_text = self.local_client.parse(
                     model=self.local_client.model,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=16000,
+                    max_tokens=2048,
                     system=SYSTEM,
                 )
             cleaned = response_text.strip()
@@ -283,6 +301,13 @@ class Analyzator:
                 if cleaned.lower().startswith("json"):
                     cleaned = cleaned[4:].lstrip()
             parsed = json.loads(cleaned)
+            if str(parsed.get("popis", "")).strip().lower() in {"stručný popis česky", "strucny popis cesky"}:
+                raise ValueError("model vrátil zástupný text místo popisu obrázku")
+            if not isinstance(parsed.get("vyfoceny_dokument"), bool):
+                parsed["vyfoceny_dokument"] = str(parsed.get("vyfoceny_dokument", "")).lower() in {"true", "yes", "ano", "1"}
+            confidence = str(parsed.get("jistota", "nizka")).lower()
+            confidence = confidence.translate(str.maketrans("áčďéěíňóřšťúůýž", "acdeeinorstuuyz"))
+            parsed["jistota"] = confidence if confidence in {"vysoka", "stredni", "nizka"} else "nizka"
             return Analyza.model_validate(parsed)
 
         if is_image:

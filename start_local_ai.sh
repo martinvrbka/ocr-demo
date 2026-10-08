@@ -58,7 +58,8 @@ if ! curl -fsS http://localhost:11434/v1/models >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! ollama list | grep -q "llava:latest"; then
+available_models="$(ollama list)"
+if ! grep -Fq "llava:latest" <<< "$available_models"; then
   echo "Stahuji model llava:latest pro rozpoznání fotek…"
   ollama pull llava:latest
 fi
