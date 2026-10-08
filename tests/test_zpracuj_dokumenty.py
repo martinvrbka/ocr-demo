@@ -292,19 +292,53 @@ class TestRuleUtilities(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             inbox = root / "inbox"
+            output = root / "out"
             inbox.mkdir()
+            archived = output / "06_Faktury" / "first.txt"
+            archived.parent.mkdir(parents=True)
+            archived.write_bytes(content)
             duplicate = inbox / "second.txt"
             duplicate.write_bytes(content)
             with (patch("zpracuj_dokumenty.INBOX", inbox),
-                  patch("zpracuj_dokumenty.OUT", root / "out"),
+                  patch("zpracuj_dokumenty.OUT", output),
                   patch("zpracuj_dokumenty.DB", root / "db.json"),
                   patch("zpracuj_dokumenty.ready_files", return_value=[duplicate]),
                   patch("zpracuj_dokumenty.write_summary") as summary):
-                                self.assertTrue(run_once(FakeProcessor(), [original]))
+                self.assertTrue(run_once(FakeProcessor(), [original]))
             self.assertFalse(duplicate.exists())
             self.assertEqual(len(original["upozorneni"]), 1)
             self.assertIn("Duplicitní nahrání", original["upozorneni"][0])
             summary.assert_called_once()
+
+    def test_run_once_restores_missing_archived_duplicate(self):
+        import hashlib
+
+        content = "Faktura č. 2026-1234\nDodavatel: Autoservis\nCelkem k úhradě: 1200 Kč"
+        digest = hashlib.sha1(content.encode("utf-8")).hexdigest()
+        existing = {
+            "soubor": "invoice.txt", "otisk": digest, "typ": "faktura",
+            "cesta": "06_Faktury/invoice.txt", "upozorneni": [],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inbox = root / "inbox"
+            output = root / "out"
+            inbox.mkdir()
+            recovered = inbox / "invoice.txt"
+            recovered.write_text(content, encoding="utf-8")
+            processor = Zpracovani.__new__(Zpracovani)
+            processor.ai = None
+            docs = [existing]
+            with (patch("zpracuj_dokumenty.INBOX", inbox),
+                  patch("zpracuj_dokumenty.OUT", output),
+                  patch("zpracuj_dokumenty.DB", root / "db.json"),
+                  patch("zpracuj_dokumenty.ready_files", return_value=[recovered]),
+                  patch("zpracuj_dokumenty.write_summary")):
+                run_once(processor, docs)
+            restored = output / docs[0]["cesta"]
+            self.assertEqual(len(docs), 1)
+            self.assertTrue(restored.is_file())
+            self.assertEqual(restored.read_text(encoding="utf-8"), content)
 
     def test_run_once_deduplicates_same_batch(self):
         with tempfile.TemporaryDirectory() as tmp:

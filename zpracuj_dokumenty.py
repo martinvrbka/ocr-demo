@@ -702,14 +702,19 @@ def run_once(z: Zpracovani, docs: list[dict]) -> bool:
             continue
         previous = by_hash.get(digest)
         if previous:
-            warning = f"Duplicitní nahrání přeskočeno; stejný soubor už je evidován jako {previous['soubor']}."
-            previous.setdefault("upozorneni", [])
-            if warning not in previous["upozorneni"]:
-                previous["upozorneni"].append(warning)
-            p.unlink(missing_ok=True)
-            save_db(docs)
-            print(f"duplicitní obsah už je zařazen jako {previous['soubor']}; kopie přeskočena.")
-            continue
+            archived = OUT / (previous.get("cesta") or "")
+            if archived.is_file():
+                warning = f"Duplicitní nahrání přeskočeno; stejný soubor už je evidován jako {previous['soubor']}."
+                warnings = previous.setdefault("upozorneni", [])
+                if warnings is None:
+                    warnings = previous["upozorneni"] = []
+                if warning not in warnings:
+                    warnings.append(warning)
+                p.unlink(missing_ok=True)
+                save_db(docs)
+                print(f"duplicitní obsah už je zařazen jako {previous['soubor']}; kopie přeskočena.")
+                continue
+            print(f"chybí archivní soubor {previous.get('cesta')}; obnovuji znovu nahranou kopii. ", end="")
         try:
             doc = z.process(p)
         except FileNotFoundError:
@@ -717,7 +722,11 @@ def run_once(z: Zpracovani, docs: list[dict]) -> bool:
                 print("soubor už mezitím přesunul jiný běh aplikace, přeskakuji.")
                 continue
             raise
-        docs.append(doc)
+        if previous:
+            doc["upozorneni"] = list(previous.get("upozorneni") or [])
+            docs[next(i for i, item in enumerate(docs) if item is previous)] = doc
+        else:
+            docs.append(doc)
         if doc.get("otisk"):
             by_hash[doc["otisk"]] = doc
         save_db(docs)
