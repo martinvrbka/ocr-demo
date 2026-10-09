@@ -118,3 +118,5 @@ The difficult documents hide inconsistencies the summary is expected to capture:
 - `zpracuj_dokumenty.py`: folder monitoring, file reading, rules, classification, and summary generation
 - `ai_vytezeni.py`: connection to Claude and the list of fields to extract from each document
 - `vytvor_testovaci_dokumenty.py`: regenerates the base and difficult documents plus eleven scenario folders
+- [ARCHITEKTURA.md](ARCHITEKTURA.md): technical architecture, module responsibilities, data flow, AI routing, state and failure handling
+- [understandingprojectfordummies.md](understandingprojectfordummies.md): a plain-language walkthrough of the same process, OCR and AI concepts

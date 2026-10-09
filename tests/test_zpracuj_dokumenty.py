@@ -263,6 +263,42 @@ class TestRuleUtilities(unittest.TestCase):
         self.assertEqual(result.jistota, "nizka")
         self.assertEqual(result.popis, "Přední sklo je prasklé.")
 
+    def test_local_image_analysis_can_return_structured_json_when_requested(self):
+        class FakeClient:
+            model = "llava:latest"
+
+            def supports_vision(self):
+                return True
+
+            def build_vision_messages(self, system, prompt, image_path):
+                return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+
+            def parse(self, **kwargs):
+                self.last_kwargs = kwargs
+                return json.dumps({
+                    "typ": "faktura",
+                    "vyfoceny_dokument": False,
+                    "popis": "Na obrázku je vyfocená faktura za čelní sklo.",
+                    "jazyk": "čeština",
+                    "jistota": "stredni",
+                    "kvalita": None,
+                    "upozorneni": [],
+                    "fakta": {"spz_klienta": "7AK 2341"},
+                    "naklad": {"castka_celkem": 10250, "mena": "CZK", "za_co": "výměna čelního skla"},
+                    "udaje": [{"nazev": "Dodavatel", "hodnota": "AUTO SKLO NOVÁK"}],
+                })
+
+        analyzer = Analyzator.__new__(Analyzator)
+        analyzer.provider = "local"
+        analyzer.local_client = FakeClient()
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "invoice.jpg"
+            image_path.write_bytes(b"fake image")
+            result = analyzer.analyze(image_path, "Celkem k úhradě: 10 250 Kč", True, structured=True, expected_type="faktura")
+        self.assertEqual(result.typ, "faktura")
+        self.assertEqual(result.naklad.castka_celkem, 10250)
+        self.assertEqual(result.fakta.spz_klienta, "7AK 2341")
+
     def test_local_ai_is_skipped_for_rule_classified_documents(self):
         class FakeLocalAI:
             provider = "local"

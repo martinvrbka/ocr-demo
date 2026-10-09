@@ -498,6 +498,20 @@ def safe_read(path: Path) -> tuple[str, str]:
         return "", f"chyba čtení: {e}"
 
 
+def should_retry_with_ai(doc_type: str, extracted: dict, is_image: bool) -> bool:
+    if not is_image or doc_type in {"foto", "neznamy"}:
+        return False
+    if doc_type == "faktura":
+        return bool(not extracted.get("_castka") or not (extracted.get("Dodavatel") or extracted.get("Číslo faktury")))
+    if doc_type == "protokol":
+        return bool(not extracted.get("Datum nehody") or not extracted.get("Zavinění"))
+    if doc_type == "doklad_vozidla":
+        return bool(not extracted.get("_spz") or not extracted.get("VIN"))
+    if doc_type == "lekarska_zprava":
+        return bool(not extracted.get("Datum vyšetření") or not extracted.get("Diagnóza"))
+    return False
+
+
 class Zpracovani:
     def __init__(self):
         from ai_vytezeni import Analyzator, load_api_key
@@ -513,9 +527,10 @@ class Zpracovani:
             return f"lokální model ({getattr(self.ai.local_client, 'model', 'llama3.1')})"
         return f"Claude ({MODEL})"
 
-    def analyze_ai(self, path: Path, text: str, is_image: bool):
+    def analyze_ai(self, path: Path, text: str, is_image: bool, structured: bool = False,
+                   expected_type: str | None = None):
         try:
-            return self.ai.analyze(path, text, is_image)
+            return self.ai.analyze(path, text, is_image, structured=structured, expected_type=expected_type)
         except Exception as e:
             if getattr(self.ai, "provider", None) == "anthropic" and hasattr(self.ai, "anthropic"):
                 auth = getattr(self.ai.anthropic, "AuthenticationError", None)
@@ -536,9 +551,12 @@ class Zpracovani:
                "zpracovano": datetime.now().strftime("%d.%m.%Y %H:%M:%S"), "upozorneni": []}
         text, method = safe_read(path)
         doc_type, _ = classify(text, is_image)
+        u = extract(doc_type, text, path.name) if doc_type != "neznamy" else {}
+        retry_ai = bool(self.ai and is_image and should_retry_with_ai(doc_type, u, is_image))
         local_rules_sufficient = (getattr(self.ai, "provider", None) == "local"
-                                  and doc_type not in {"foto", "neznamy"})
-        a = self.analyze_ai(path, text, is_image) if self.ai and not local_rules_sufficient else None
+                                  and doc_type not in {"foto", "neznamy"}
+                                  and not retry_ai)
+        a = self.analyze_ai(path, text, is_image, structured=retry_ai, expected_type=doc_type) if self.ai and (not local_rules_sufficient or retry_ai) else None
         if a:
             zdroj = "lokální model" if getattr(self.ai, "provider", None) == "local" else "Claude"
             rec.update(
@@ -550,7 +568,6 @@ class Zpracovani:
                 naklad=a.naklad.model_dump() if a.naklad else None,
                 udaje={u.nazev: u.hodnota for u in a.udaje}, text=text.strip()[:4000])
         else:
-            u = extract(doc_type, text, path.name) if doc_type != "neznamy" else {}
             rec.update(typ=doc_type, zdroj="pravidla", precteno=method, fakta=rule_fakta(doc_type, u),
                        naklad=rule_naklad(doc_type, u), udaje={k: v for k, v in u.items() if not k.startswith("_")},
                        text=text.strip()[:4000])

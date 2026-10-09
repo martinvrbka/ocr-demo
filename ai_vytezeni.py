@@ -245,20 +245,49 @@ class Analyzator:
         self.anthropic = anthropic
         self.client = anthropic.Anthropic(api_key=api_key)
 
-    def analyze(self, path: Path, text: str, is_image: bool) -> Analyza:
+    def analyze(self, path: Path, text: str, is_image: bool, structured: bool = False,
+                expected_type: str | None = None) -> Analyza:
         """text = text, který aplikace už přečetla (Word, Excel, e-mail...). Obrázky a PDF jdou přímo."""
         if self.provider == "local":
-            def compact_schema(value):
-                if isinstance(value, dict):
-                    return {key: compact_schema(item) for key, item in value.items()
-                            if key not in {"title", "description"}}
-                if isinstance(value, list):
-                    return [compact_schema(item) for item in value]
-                return value
-
-            schema = json.dumps(compact_schema(Analyza.model_json_schema()), ensure_ascii=False,
-                                separators=(",", ":"))
             if is_image and self.local_client.supports_vision() and path.exists():
+                if structured:
+                    fields_by_type = {
+                        "faktura": "V naklad se zaměř na dodavatele, číslo dokladu, za_co, celkovou částku jako číslo a měnu.",
+                        "doklad_vozidla": "Ve udaje/fakta vyhledej registrační značku a VIN.",
+                        "protokol": "Ve fakta/udaje hledej datum nehody, účastníky, zavinění a zranění.",
+                        "lekarska_zprava": "Ve fakta/udaje hledej pacienta, datum vyšetření a diagnózu.",
+                    }
+                    prompt = (
+                        f"Typ podle OCR/pravidel: {expected_type}. OCR text (může být chybný):\n{text}\n\n"
+                        f"Prohlédni původní obrázek. {fields_by_type.get(expected_type or '', 'Doplň chybějící údaje z obrázku.') } "
+                        "Vrať pouze JSON kompatibilní s Analyza: klíč typ, případně fakta, naklad a udaje. "
+                        "Zachovej typ určený pravidly. Doplň jen údaje, které lze přečíst z obrázku; nejisté nech null. "
+                        "Částku vrať jako číslo a měnu samostatně. Neopakuj text OCR jako celý popis."
+                    )
+                    vision_system = "Jsi asistent pro vytěžování dokladů k pojistné události. Vrať jen validní JSON."
+                    messages = self.local_client.build_vision_messages(vision_system, prompt, path)
+                    response_text = self.local_client.parse(
+                        model=self.local_client.model,
+                        messages=messages[1:],
+                        max_tokens=768,
+                        system=messages[0]["content"],
+                        json_mode=True,
+                    )
+                    cleaned = response_text.strip()
+                    if cleaned.startswith("```"):
+                        cleaned = cleaned.strip("`\n")
+                        if cleaned.lower().startswith("json"):
+                            cleaned = cleaned[4:].lstrip()
+                    parsed = json.loads(cleaned)
+                    if not isinstance(parsed, dict):
+                        raise ValueError("vision model nevrátil JSON objekt")
+                    if not isinstance(parsed.get("vyfoceny_dokument"), bool):
+                        parsed["vyfoceny_dokument"] = True
+                    confidence = str(parsed.get("jistota", "nizka")).lower()
+                    confidence = confidence.translate(str.maketrans("áčďéěíňóřšťúůýž", "acdeeinorstuuyz"))
+                    parsed["jistota"] = confidence if confidence in {"vysoka", "stredni", "nizka"} else "nizka"
+                    return Analyza.model_validate(parsed)
+
                 prompt = (
                     f"Obrázek souboru {path.name}. OCR: {text or 'bez čitelného textu'}. "
                     "Napiš jedinou stručnou českou větu o tom, co je na obrázku vidět. "
@@ -282,6 +311,16 @@ class Analyzator:
                     raise ValueError("model vrátil zástupný text místo popisu obrázku")
                 return Analyza(typ="foto", vyfoceny_dokument=False, popis=caption)
             else:
+                def compact_schema(value):
+                    if isinstance(value, dict):
+                        return {key: compact_schema(item) for key, item in value.items()
+                                if key not in {"title", "description"}}
+                    if isinstance(value, list):
+                        return [compact_schema(item) for item in value]
+                    return value
+
+                schema = json.dumps(compact_schema(Analyza.model_json_schema()), ensure_ascii=False,
+                                    separators=(",", ":"))
                 prompt = (
                     f"Název souboru: {path.name}\n"
                     f"<obsah_souboru>\n{text or 'Soubor byl načten jako obrázek nebo PDF; OCR text chybí.'}\n</obsah_souboru>\n"

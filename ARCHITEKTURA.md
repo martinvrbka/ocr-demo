@@ -1,314 +1,104 @@
-# Architektura a princip fungování aplikace
+# Technická architektura
 
-Tento projekt je v podstatě jednoduchý, ale velmi praktický pipeline: dostaneš soubor, musíš z něho vytáhnout informace, rozhodnout, co to je, a dát to do správné kategorie. Je to stejný princip, jaký používají většina dokumentových systémů v praxi — jen zjednodušený a přizpůsobený k pojistným událostem.
+## 1. Rozsah a cíle
 
-Nejde o "magii AI" ani o jeden velký model, který vše zařídí. Jde o to, že se data posouvají krok za krokem přes několik vrstev:
+Aplikace je lokální dávkový/watch-folder procesor dokumentů k pojistným událostem. Sleduje `klient_upload/`, pro každý soubor získá text, klasifikuje typ, vytěží údaje, přesune jej do `roztridene/<kategorie>/` a obnoví HTML souhrn.
 
-1. načíst soubor,
-2. přečíst text,
-3. poznat typ dokumentu,
-4. vyndat obsah,
-5. sjednotit ho,
-6. případně doplnit AI,
-7. uložit a shrnout.
+Návrh je záměrně jednoduchý: žádná databázová služba, fronta úloh ani webové API. Stav se ukládá do `roztridene/.databaze.json`; jednotlivé soubory zůstávají běžnými soubory na disku. Základním principem je pravidlové zpracování s volitelným AI doplněním, nikoli povinné volání modelu pro každý dokument.
 
-To je klasická architektura počítačového zpracování dokumentů.
+## 2. Komponenty
 
----
+| Komponenta | Odpovědnost |
+|---|---|
+| [spustit.sh](spustit.sh) | Tenký vstupní bod; předá řízení lokálnímu launcheru. |
+| [start_local_ai.sh](start_local_ai.sh) | Vytvoří log běhu, získá exkluzivní zámek projektu, ověří Ollamu a model, následně spustí Python proces. |
+| [zpracuj_dokumenty.py](zpracuj_dokumenty.py) | Polling, čtení/OCR, klasifikace, extrakce, deduplikace, ukládání, přejmenování a HTML report. |
+| [ai_vytezeni.py](ai_vytezeni.py) | Datové modely Pydantic, konfigurace poskytovatele, Anthropic klient a lokální OpenAI-kompatibilní/Ollama klient. |
+| `klient_upload/` | Příchozí soubory; po úspěšném zpracování se obsah přesune do výstupu. |
+| `roztridene/` | Kategorie dokumentů, `.databaze.json` a `SOUHRN_pojistne_udalosti.html`. |
+| `logs/` | Samostatný konzolový log pro každý start; výstup současně zůstává v terminálu. |
+| [tests/test_zpracuj_dokumenty.py](tests/test_zpracuj_dokumenty.py) | Unit/regresní testy čtení, pravidel, názvů, fallbacku a deduplikace. |
 
-## 1) Co je vlastně cíl aplikace?
+## 3. Runtime a řízení souběhu
 
-Představ si, že klient nahraje do složky několik dokumentů:
+```mermaid
+flowchart TD
+    U[Klient nebo operátor] --> I[klient_upload/]
+    S[spustit.sh] --> L[start_local_ai.sh]
+    L --> O{Ollama a llava dostupné?}
+    O -->|ne| P[Pokus o spuštění serveru / stažení modelu]
+    O -->|ano| M[zpracuj_dokumenty.py]
+    P --> M
+    M --> R[Poll složky a kontrola stabilní velikosti]
+    I --> R
+    R --> H[SHA-1 a deduplikace]
+    H --> T[Čtení, OCR, klasifikace a extrakce]
+    T --> A{AI potřebná?}
+    A -->|ne| D[Pravidlový výsledek]
+    A -->|ano| V[Lokální vision / nakonfigurovaný poskytovatel]
+    V -->|selhání nebo timeout| D
+    V -->|validní výsledek| X[Validace Pydantic]
+    X --> F[Přejmenování a přesun]
+    D --> F
+    F --> J[.databaze.json]
+    J --> W[HTML souhrn]
+```
 
-- fakturu za opravu,
-- policejní protokol,
-- SMS od druhého účastníka,
-- fotku auta,
-- lékařskou zprávu.
+`start_local_ai.sh` drží neblokující `flock` v souboru `/tmp/pojistne-udalosti-<hash-cesty>.lock`. Stejný zámek používá `vycistit.sh`, takže výstup nelze vymazat pod běžícím watcherem. Normální režim kontroluje inbox přibližně každou sekundu; `--jednou` projde aktuální soubory a skončí. `ready_files()` porovnává velikost před a po sekundové pauze, aby nezačal číst soubor kopírovaný do inboxu.
 
-Aplikace se musí rozhodnout:
+## 4. Čtení a OCR
 
-- co je to za dokument,
-- jaké informace z něj vytáhne,
-- kde ho uloží,
-- jaké údaje z něj použije do souhrnu pojistné události.
+`read_text(path)` dispatchuje podle přípony:
 
-Tedy ne jen "to je PDF" nebo "to je JPG", ale "to je faktura z opravny, částka je X, datum je Y, a to souvisí s událostí".
+- PDF: `read_pdf()` zkusí textovou vrstvu přes `pypdf`. Pokud je textu málo, renderuje stránky pomocí `pdftoppm` a předá je OCR.
+- JPG/PNG/TIFF/BMP/WEBP: `ocr_image()` používá RapidOCR. Odhadne řádky z OCR bounding-boxů a vrátí text.
+- DOCX: `read_docx()` čte odstavce a tabulky.
+- XLSX/XLSM: `read_xlsx()` čte listy a umí dopočítat podporovaný tvar jednoduchého `SUM` vzorce.
+- EML: `read_eml()` extrahuje hlavičky a textové/HTML tělo.
+- HTML/TXT/CSV/MD: převod HTML na text, případně přímé čtení textu.
 
----
+OCR řeší znaky na obrázku, ne význam scény. Prázdný OCR výsledek u fotografie auta je očekávaný a posílá fotografii do kategorie `foto`.
 
-## 2) Jaký je hlavní design?
+## 5. Klasifikace a extrakce
 
-Aplikace má čtyři vrstvy:
+`classify(text, is_image)` odstraní diakritiku a mezery pomocí `compact()`, sečte vážené indikátory definované v `TYPES` a vrátí typ s nejvyšším skóre. Pro obrázek s malým množstvím rozpoznaných znaků použije prahové pravidlo: signál dokumentu vede ke klasifikaci dokumentu; bez něj se obrázek považuje za fotku. Slabý textový signál vrací `neznamy`.
 
-### 2.1 Vstupní vrstva
-Složka `klient_upload/` je vstupní brána.
+`extract(type, text, filename)` používá typově specifická regexová pravidla. Společná extrakce dohledává SPZ, VIN a číslo události. `rule_fakta()` převádí výsledek do společné struktury `Fakta`; `rule_naklad()` do struktury nákladu. Report proto nemusí znát všechny původní názvy polí z dokumentu.
 
-V této složce se objeví nový soubor a aplikace jej zahlédne. V teorii se to nazývá watch-folder nebo polling loop:
+`FOLDER` a `TYPE_LABEL` jsou mapy typu dokumentu na fyzickou výstupní složku a český popisek. Přidání nové kategorie vyžaduje sladit typy, mapu složek/popisků, klasifikaci nebo AI schéma, extrakci, případně pravidla reportu a testy.
 
-- aplikace pravidelně kontroluje složku,
-- najde nové soubory,
-- zpracuje je,
-- přesune do výstupního adresáře.
+## 6. AI směrování a kontrakty
 
-Tady je klíčové, že aplikace není "připravená na jediný typ dokumentu". Může přijmout PDF, DOCX, XLSX, PNG, JPG, e-mail, HTML nebo text.
+AI datové kontrakty jsou modely Pydantic `Analyza`, `Fakta`, `Naklad` a `Udaj` v `ai_vytezeni.py`. Anthropic cesta používá strukturované parsování modelu. Lokální klient posílá požadavky na OpenAI-kompatibilní endpoint Ollamy.
 
-### 2.2 Vrstva čtení dokumentu
-Tady přichází první logický krok: dostat data z dokumentu do textové formy.
+V lokálním režimu `Zpracovani.process()` nejdřív přečte dokument a spustí pravidlovou klasifikaci. Pokud pravidla určí známý typ dokumentu, AI se přeskočí. Lokální AI se použije pro nejednoznačný dokument (`neznamy`) nebo fotografii (`foto`). Vision větev posílá obrázek jako data URL a žádá krátký textový popis; běžná textová extrakce používá JSON režim a Pydantic validaci.
 
-- PDF se čte přes `read_pdf()`
-- Word přes `read_docx()`
-- Excel přes `read_xlsx()`
-- e-mail přes `read_eml()`
-- HTML přes `strip_html()`
-- obrázek přes OCR
+### Současný limit a doporučené rozšíření
 
-Důležité: různé formáty obsahují data různým způsobem. PDF může být:
+Současná lokální větev není OCR backloop: pokud je fotografie klasifikována jako známý typ, například faktura, AI se přeskočí i v případě, že pravidlová extrakce nenašla částku. U typu `foto`/`neznamy` vision větev vrací popisný text, nikoli `Analyza` JSON. Tím se ztrácí možnost doplnit text, který OCR kvůli stínu nebo rotaci nepřečetlo.
 
-- normální text,
-- sken,
-- obrázek,
-- nebo kombinace obojího.
+Doporučený další krok je vyvolat vision model pro obrázky také při nízké kvalitě OCR nebo při chybějících kritických polích podle typu dokumentu. Model by měl vracet validovatelnou `Analyza` strukturu se stejnými poli `fakta`, `naklad` a `udaje`; OCR/regex výsledek se zachová a obě sady polí se sloučí po jednotlivých hodnotách. AI má doplnit chybějící údaje, ne přepisovat potvrzené hodnoty. Konflikt zdrojů se uloží jako upozornění pro člověka.
 
-Aplikace musí rozlišit, jakým způsobem je třeba dokument přečíst.
+Spouštěcí podmínka má být typově specifická: u faktury chybějící částka nebo měna, u technického průkazu chybějící SPZ/VIN, u protokolu chybějící datum nebo účastníci. Jediný omezený AI pokus stačí; při timeoutu se pokračuje s OCR a označí se chybějící pole. Je potřeba testovat také správné OCR případy, aby AI nezvyšovala falešná upozornění ani náklady/čas u každého souboru.
 
-### 2.3 Vrstva rozpoznání typu
-Po přečtení dokumentu se rozhoduje: "Co to je?"
+Výjimka nebo timeout v `analyze_ai()` neukončí dávku: aplikace vypíše důvod a přejde na pravidla/OCR. Vision timeout se neopakuje jako textový požadavek, protože textová větev obrázek nevidí. Lokální model pro fotografii běží na CPU stroji pomalu a jeho popis může mít nízkou jistotu; nejde o autoritativní odborné posouzení.
 
-To dělá funkce `classify()`. Tato funkce:
+## 7. Deduplikace, jména a stav
 
-- převádí text do normalizované podoby,
-- hledá klíčová slova,
-- srovnává skóre typu dokumentu,
-- vybere nejpravděpodobnější typ.
+Před zpracováním `run_once()` vypočte SHA-1 obsahu. Pokud stejný otisk existuje v databázi a soubor v `roztridene/` stále existuje, nová kopie se odstraní z inboxu, do původního záznamu se přidá upozornění a nový záznam nevznikne. Pokud databázový záznam existuje, ale jeho archivní soubor chybí, nově nahraný soubor se zpracuje znovu a stale záznam se nahradí. SHA-1 je zde identifikátor shodného obsahu, nikoli bezpečnostní kontrola.
 
-Příklady:
+`is_uninformative_filename()` zachytává zjevně náhodné alfanumerické názvy. Jen u nich `descriptive_filename()` sestaví název z typu a extrahovaných faktů. `free_name()` řeší kolizi přidáním číselného sufixu. Originál zůstane v `puvodni_soubor`; nové relativní umístění se uloží jako `cesta`. Smysluplné názvy a nerozpoznané soubory se nepřejmenovávají.
 
-- `faktura` = "faktura", "dodavatel", "celkem k úhradě", "splatnost"
-- `protokol` = "policie", "protokol o nehodě", "datum a čas nehody"
-- `foto` = obrázek bez čitelného textu, který není dokument
+`.databaze.json` je aktuální index a zdroj údajů pro report. Soubory jsou fyzicky přesunuté do kategorií. HTML je odvozený výstup generovaný přes `write_summary()`; lze jej znovu sestavit z databáze.
 
-Toto je klasická detekce typu dokumentu podle klíčů a dat.
+## 8. Výstup a provozní logy
 
-### 2.4 Vrstva extrakce dat
-Když už víme, co dokument je, hledáme v něm konkrétní informace:
+`case_overview()` skládá fakta napříč dokumenty a kontroly nesrovnalostí. `write_summary()` vypisuje přehled události, kontroly, náklady podle měny, fotodokumentaci a karty jednotlivých dokumentů. Původní jméno uploadu se zobrazí u dokumentu, pokud došlo k přejmenování.
 
-- SPZ,
-- VIN,
-- částka,
-- datum,
-- místo nehody,
-- jméno účastníka,
-- číslo faktury,
-- druh poškození.
+`start_local_ai.sh` přesměrovává stdout i stderr přes `tee` do `logs/run_<timestamp>_<pid>.log` a při ukončení zaznamená exit code. Ollama server spuštěný launcherem má zvláštní log `/tmp/pojistne-udalosti-ollama.log`. `./vycistit.sh` maže `roztridene/` a obsah inboxu, ale zachovává logy a odmítne běžet při drženém aplikačním zámku.
 
-To dělá `extract()`. V tomto kroku se používají regulární výrazy a pravidla typu:
+## 9. Testování a omezení
 
-- „najdi text, který následuje po `Celkem k úhradě`“
-- „najdi číslo po `VIN`“
-- „najdi datum po `Datum nehody`“
+Testy pokrývají pravidlovou klasifikaci/extrakci, PDF čtení, OCR varianty, přejmenování náhodných názvů, zachování smysluplných názvů, duplicate guard i obnovu chybějící archivní kopie. Fiktivní datové sady generuje [vytvor_testovaci_dokumenty.py](vytvor_testovaci_dokumenty.py); jeho přímé spuštění obnoví hlavní, náročnou a scénářové složky.
 
-Tady se z volného textu stává strukturovaná data.
-
----
-
-## 3) Co je OCR a proč je důležité?
-
-OCR = Optical Character Recognition.
-
-Jinými slovy: software převádí obrázek s textem do textu, který může číst počítač.
-
-Příklad:
-
-- máš fotografii faktury,
-- OCR přečte: "Faktura č. 2026/011", "Celkem k úhradě: 3 630,00 Kč",
-- z těchto údajů pak aplikace vytvoří strukturu.
-
-Bez OCR by bylo nemožné zpracovat:
-
-- fotky faktur,
-- skenované PDF,
-- naskenované policejní protokoly,
-- SMS screenshoty,
-- ručně psané dokumenty.
-
-V tomto projektu se OCR používá hlavně v `ocr_image()` a v `read_pdf()` pro skenované PDF.
-
-Důležité ale je: OCR není "všechny obrázky rozpozná správně". Pokud je na fotce pouze auto nebo škoda bez textu, OCR nic nevrátí. A to je naprosto normální.
-
----
-
-## 4) Proč existuje fallback podle pravidel?
-
-Protože AI není vždy dostupný ani spolehlivý.
-
-V této aplikaci je důležitý koncept fallbacku:
-
-- pokud je k dispozici AI model, použije se pro hlubší posouzení,
-- pokud ne, nebo pokud selže, aplikace používá pravidla a OCR.
-
-To je zásadní v reálném systému, protože žádný systém nemá 100% spolehlivost.
-
-Pravidla tedy fungují jako stabilní záloha:
-
-- rozpoznají běžné dokumenty,
-- zpracují běžné formáty,
-- dokážou pracovat offline,
-- nevyžadují žádný API klíč.
-
-To je to, co dělá aplikaci praktickou a robustní.
-
----
-
-## 5) Jak funguje normalizace dat?
-
-Když `extract()` vrátí data, tak třeba:
-
-- "Číslo faktury"
-- "Datum nehody"
-- "Celkem k úhradě"
-- "SPZ"
-
-jsou v různých formátech a s různými názvy. To je problém, protože aplikace potřebuje ke všem dokumentům přistupovat stejně.
-
-Proto existují funkce:
-
-- `rule_fakta()`
-- `rule_naklad()`
-
-Ty přepíší data do jednotného formátu, například:
-
-- `datum_nehody`
-- `spz_klienta`
-- `cislo_pojistne_udalosti`
-- `vin`
-
-Takto se z různých dokumentů dá jednoduše vytvořit jeden souhrn události.
-
-Tento krok je důležitý, protože bez něj by aplikace pracovala jen s "hromadou různých textů" a ne s daty, které lze porovnávat a vyhodnocovat.
-
----
-
-## 6) Kde vstupuje AI?
-
-AI je v tomto systému "enhancement vrstva".
-
-To znamená: nejprve máme klasický pipeline, a až poté se přidá AI, pokud má smysl.
-
-V [ai_vytezeni.py](ai_vytezeni.py) je definováno schéma dat:
-
-- `Analyza`
-- `Fakta`
-- `Naklad`
-- `Udaj`
-
-AI model dostane instrukci a validní JSON schema. To znamená, že model nevrací volný text, ale strukturu, která se dá přímo zpracovat v kódu.
-
-Představ si to takhle:
-
-- pravidla = "rychlá a spolehlivá první vrstva"
-- AI = "chytřejší a kontextovější druhá vrstva"
-
-AI dělá věci jako:
-
-- rozhodnout, jestli je dokument v jiném jazyce,
-- dát mu popis,
-- posoudit jistotu,
-- vyhodnotit kvalitu,
-- upozornit na podezřelé údaje,
-- analyzovat foto lépe než jednoduchý OCR.
-
----
-
-## 7) Proč je důležité, že model dostává obrázek jako obrázek?
-
-Tady je zásadní praktická poznámka.
-
-Textový model (`llama3.1`) dokáže číst text. Ale když je na obrázku auto, poškození nebo výměna čelního skla, nevidí to jako "obraz". Vidí jen text, tedy nic, pokud není v obrázku text.
-
-Proto se v aktuální verzi používá i multimodální model (`llava:latest`).
-
-Ten umí:
-
-- dostat obrázek jako vstup,
-- vidět scénu,
-- odpovědět na otázku typu: "Na obrázku je výměna čelního skla?"
-
-Toto je důležitý rozdíl mezi:
-
-- OCR: přečti text z obrázku,
-- vision model: pochop obraz.
-
-A to je přesně to, co máš v praxi v pojistných událostech: fotka auta nebo poškozeného dílu, kdy není žádný text, ale člověk z obrázku ví, co to je.
-
----
-
-## 8) Jak se vytvoří výstup?
-
-Po zpracování souborů se aplikace postará o HTML souhrn.
-
-Tady se seskládá přehled všech dokumentů:
-
-- typ dokumentu,
-- popis,
-- důležité údaje,
-- upozornění,
-- doklady a fotky,
-- součet nákladů,
-- rozporuplné údaje mezi dokumenty.
-
-V praxi to funguje jako pracovní list pro likvidátora: ne jen "všechny dokumenty v jedné složce", ale "strukturované informace, které lze okamžitě posoudit".
-
----
-
-## 9) Praktický pohled: co se stane s jedním dokumentem?
-
-Představ si, že klient nahraje soubor `Faktura_2026_001.jpg`.
-
-1. `klient_upload/` dostane nový soubor.
-2. loop ho najde.
-3. `read_text()` rozpozná, že jde o obrázek.
-4. `ocr_image()` přečte text z faktury.
-5. `classify()` rozhodne: "Toto je faktura".
-6. `extract()` vybere "dodavatel, datum, částka, splatnost".
-7. `rule_naklad()` vytvoří strukturu skladu.
-8. soubor se přesune do `roztridene/06_Faktury/`.
-9. souhrn se aktualizuje o fakturu a její údaje.
-
-Stejný princip funguje i pro policejní protokol, SMS, foto vozidla nebo lékařskou zprávu.
-
----
-
-## 10) Proč je toto dobrá architektura?
-
-Protože rozděluje práci do logických vrstev:
-
-- vstup,
-- čtení,
-- klasifikace,
-- extrakce,
-- normalizace,
-- AI,
-- report.
-
-To je důležité, protože každá vrstva má jiný úkol a nemusí řešit vše najednou.
-
-Výhody:
-
-- snadnější debugování,
-- snadnější testování,
-- menší riziko chyb,
-- možnost vyměnit jednu vrstvu bez zásahu do ostatních,
-- možnost přidat další typ dokumentu nebo další zdroj dat.
-
-To je běžný model v produkčních dokumentových systémech.
-
----
-
-## 11) Shrnutí v jedné větě
-
-Tento projekt je praktický příklad pipeline systému: načíst dokument, přečíst ho, rozpoznat typ, vyextrahovat data, normalizovat je, případně rozšířit AI a pak z toho vytvořit přehled pro člověka.
-
-Jinými slovy: neřešíme jeden velký problém najednou, ale děláme ho po menších krocích, které se dají testovat a zlepšovat jednotlivě.
-
-To je důvod, proč se podobné systémy používají v reálné praxi: je to přehledné, škálovatelné a robustní.
+Současná implementace je jednoproceseová aplikace pro lokální demo. JSON databáze nemá souběžné transakce ani víceuživatelskou synchronizaci; exkluzivní zámek chrání pouze jednu kopii tohoto projektu na stejném systému. OCR a model mohou chybovat, proto je HTML souhrn pomůcka k revizi, ne automatické rozhodnutí o pojistném plnění.
